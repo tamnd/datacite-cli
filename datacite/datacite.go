@@ -95,8 +95,8 @@ type Member struct {
 // --- wire types ---
 
 type wireResponse struct {
-	Data  json.RawMessage `json:"data"`
-	Meta  wireMeta        `json:"meta"`
+	Data json.RawMessage `json:"data"`
+	Meta wireMeta        `json:"meta"`
 }
 
 type wireMeta struct {
@@ -106,7 +106,7 @@ type wireMeta struct {
 }
 
 type wireDOI struct {
-	ID         string          `json:"id"`
+	ID         string            `json:"id"`
 	Attributes wireDOIAttributes `json:"attributes"`
 }
 
@@ -138,13 +138,13 @@ type wireTypes struct {
 }
 
 type wireFunder struct {
-	ID         string             `json:"id"`
-	Attributes wireFunderAttrs    `json:"attributes"`
+	ID         string          `json:"id"`
+	Attributes wireFunderAttrs `json:"attributes"`
 }
 
 type wireFunderAttrs struct {
-	Name    string          `json:"name"`
-	Region  string          `json:"region"`
+	Name    string            `json:"name"`
+	Region  string            `json:"region"`
 	Country wireFunderCountry `json:"country"`
 }
 
@@ -153,8 +153,8 @@ type wireFunderCountry struct {
 }
 
 type wireMember struct {
-	ID         string           `json:"id"`
-	Attributes wireMemberAttrs  `json:"attributes"`
+	ID         string          `json:"id"`
+	Attributes wireMemberAttrs `json:"attributes"`
 }
 
 type wireMemberAttrs struct {
