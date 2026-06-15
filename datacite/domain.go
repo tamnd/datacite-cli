@@ -2,76 +2,65 @@ package datacite
 
 import (
 	"context"
-	"net/url"
-	"strings"
+	"fmt"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/errs"
 )
 
-// domain.go exposes datacite as a kit Domain: a driver that a multi-domain
-// host (ant) enables with a single blank import,
+// domain.go registers the datacite kit Domain so a blank import in a multi-domain
+// host (ant) enables the driver:
 //
 //	import _ "github.com/tamnd/datacite-cli/datacite"
 //
-// exactly as a database/sql program enables a driver with `import _
-// "github.com/lib/pq"`. The init below registers it; the host then dereferences
-// datacite:// URIs by routing to the operations Register installs. The same
-// Domain also builds the standalone datacite binary (see cli.NewApp), so the
-// binary and a host share one source of truth.
-//
-// This is the scaffold's starting point: one resource type, "page", served by a
-// resolver op and a list op. Add your real types here as you model the site.
+// The Domain also builds the standalone datacite binary via cli.NewApp.
 func init() { kit.Register(Domain{}) }
 
-// Domain is the datacite driver. It carries no state; the per-run client is
+// Domain is the DataCite driver. It carries no state; the per-run client is
 // built by the factory Register hands kit.
 type Domain struct{}
 
-// Info describes the scheme, the hostnames a pasted link is matched against, and
-// the identity reused for the binary's help and version.
+// Info describes the scheme and the identity the single-site binary inherits.
 func (Domain) Info() kit.DomainInfo {
 	return kit.DomainInfo{
 		Scheme: "datacite",
 		Hosts:  []string{Host},
 		Identity: kit.Identity{
 			Binary: "datacite",
-			Short:  "A command line for datacite.",
-			Long: `A command line for datacite.
+			Short:  "Browse the DataCite DOI registry",
+			Long: `A command line for the DataCite DOI registry.
 
-datacite reads public datacite data over plain HTTPS, shapes it into
-clean records, and prints output that pipes into the rest of your tools. No API
-key, nothing to run alongside it.`,
+datacite reads public metadata from api.datacite.org over plain HTTPS, shapes
+it into clean records, and prints output that pipes into the rest of your tools.
+No API key, nothing to run alongside it.`,
 			Site: Host,
 			Repo: "https://github.com/tamnd/datacite-cli",
 		},
 	}
 }
 
-// Register installs the client factory and every operation onto app. A resolver
-// op (Single) names its own record type and answers `ant get`; a List op
-// enumerates a parent resource's members and answers `ant ls`.
+// Register installs the client factory and every operation onto app.
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	// Resolver op: one record per id, the home of `datacite page` and
-	// `ant get datacite://page/<id>`.
-	kit.Handle(app, kit.OpMeta{Name: "page", Group: "read", Single: true,
-		Summary: "Fetch a page by path or URL", URIType: "page", Resolver: true,
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, getPage)
+	kit.Handle(app, kit.OpMeta{Name: "search", Group: "read", List: true,
+		Summary: "Search DOIs by keyword",
+		Args:    []kit.Arg{{Name: "query", Help: "search query"}}}, searchDOIs)
 
-	// List op: members of a page, the home of `datacite links` and `ant ls`.
-	// It emits page stubs, so every listed member is itself an addressable
-	// datacite://page/ URI a host can follow.
-	kit.Handle(app, kit.OpMeta{Name: "links", Group: "read", List: true,
-		Summary: "List the pages a page links to", URIType: "page",
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, listLinks)
+	kit.Handle(app, kit.OpMeta{Name: "doi", Group: "read", Single: true,
+		Summary: "Fetch a single DOI record",
+		Args:    []kit.Arg{{Name: "id", Help: "DOI identifier (e.g. 10.1234/example)"}}}, getDOI)
+
+	kit.Handle(app, kit.OpMeta{Name: "funders", Group: "read", List: true,
+		Summary: "List DataCite funders"}, listFunders)
+
+	kit.Handle(app, kit.OpMeta{Name: "members", Group: "read", List: true,
+		Summary: "List DataCite members"}, listMembers)
 }
 
-// newClient builds the client from the host-resolved config, so a host and the
-// standalone binary pace and identify themselves the same way.
+// newClient builds a Client from the resolved kit Config.
 func newClient(_ context.Context, cfg kit.Config) (any, error) {
-	c := NewClient()
+	c := DefaultConfig()
 	if cfg.UserAgent != "" {
 		c.UserAgent = cfg.UserAgent
 	}
@@ -82,92 +71,106 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 		c.Retries = cfg.Retries
 	}
 	if cfg.Timeout > 0 {
-		c.HTTP.Timeout = cfg.Timeout
+		c.Timeout = cfg.Timeout
 	}
-	return c, nil
+	return NewClient(c), nil
 }
 
-// --- inputs ---
-//
-// Each handler takes a typed input struct. kit fills the fields from the tags:
-// kit:"arg" is a positional argument, kit:"flag,inherit" binds the framework's
-// shared flag of the same name, and kit:"inject" receives the client newClient
-// builds.
+// --- input structs ---
 
-type pageRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
+type searchInput struct {
+	Query  string  `kit:"arg" help:"search query"`
+	Page   int     `kit:"flag" help:"page number (default 1)"`
+	Size   int     `kit:"flag" help:"results per page (default 25)"`
 	Client *Client `kit:"inject"`
 }
 
-type listRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
-	Limit  int     `kit:"flag,inherit" help:"max results"`
+type doiInput struct {
+	ID     string  `kit:"arg" help:"DOI identifier (e.g. 10.1234/example)"`
+	Client *Client `kit:"inject"`
+}
+
+type fundersInput struct {
+	Page   int     `kit:"flag" help:"page number (default 1)"`
+	Size   int     `kit:"flag" help:"results per page (default 25)"`
+	Client *Client `kit:"inject"`
+}
+
+type membersInput struct {
+	Page   int     `kit:"flag" help:"page number (default 1)"`
+	Size   int     `kit:"flag" help:"results per page (default 25)"`
 	Client *Client `kit:"inject"`
 }
 
 // --- handlers ---
 
-func getPage(ctx context.Context, in pageRef, emit func(*Page) error) error {
-	p, err := in.Client.GetPage(ctx, pagePath(in.Ref))
+func searchDOIs(ctx context.Context, in searchInput, emit func(DOI) error) error {
+	dois, _, err := in.Client.SearchDOIs(ctx, in.Query, in.Page, in.Size)
 	if err != nil {
-		return mapErr(err)
+		return err
 	}
-	return emit(p)
-}
-
-func listLinks(ctx context.Context, in listRef, emit func(*Page) error) error {
-	pages, err := in.Client.PageLinks(ctx, pagePath(in.Ref), in.Limit)
-	if err != nil {
-		return mapErr(err)
-	}
-	for _, p := range pages {
-		if err := emit(p); err != nil {
+	for _, d := range dois {
+		if err := emit(d); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// --- Resolver: the URI-native string functions, pure and network-free ---
-
-// Classify turns any accepted input — a bare path or a full datacite.com URL —
-// into the canonical (type, id), so `ant resolve` and `ant url` touch no network.
-func (Domain) Classify(input string) (uriType, id string, err error) {
-	id = pagePath(input)
-	if id == "" {
-		return "", "", errs.Usage("unrecognized datacite reference: %q", input)
+func getDOI(ctx context.Context, in doiInput, emit func(*DOI) error) error {
+	d, err := in.Client.GetDOI(ctx, in.ID)
+	if err != nil {
+		return err
 	}
-	return "page", id, nil
+	return emit(d)
 }
 
-// Locate is the inverse: the live https URL for a (type, id).
+func listFunders(ctx context.Context, in fundersInput, emit func(Funder) error) error {
+	funders, err := in.Client.ListFunders(ctx, in.Page, in.Size)
+	if err != nil {
+		return err
+	}
+	for _, f := range funders {
+		if err := emit(f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func listMembers(ctx context.Context, in membersInput, emit func(Member) error) error {
+	members, err := in.Client.ListMembers(ctx, in.Page, in.Size)
+	if err != nil {
+		return err
+	}
+	for _, m := range members {
+		if err := emit(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- Resolver ---
+
+// Classify turns any accepted input into the canonical (uriType, id).
+func (Domain) Classify(input string) (uriType, id string, err error) {
+	if input == "" {
+		return "", "", errs.Usage("datacite: empty input")
+	}
+	// A DOI starts with "10." by convention
+	if len(input) > 3 && input[:3] == "10." {
+		return "doi", input, nil
+	}
+	return "", "", errs.Usage("datacite: unrecognized reference: %q", input)
+}
+
+// Locate returns the canonical URL for a (uriType, id).
 func (Domain) Locate(uriType, id string) (string, error) {
-	if uriType != "page" {
+	switch uriType {
+	case "doi":
+		return fmt.Sprintf("https://doi.org/%s", id), nil
+	default:
 		return "", errs.Usage("datacite has no resource type %q", uriType)
 	}
-	return BaseURL + "/" + strings.Trim(id, "/"), nil
-}
-
-// --- helpers ---
-
-// pagePath turns any accepted input into the canonical page id: the path of a
-// full URL on this host, or a bare path with its slashes trimmed.
-func pagePath(input string) string {
-	input = strings.TrimSpace(input)
-	if u, err := url.Parse(input); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		return strings.Trim(u.Path, "/")
-	}
-	return strings.Trim(input, "/")
-}
-
-// mapErr converts a library error into the kit error kind that carries the right
-// exit code, so a host renders the same outcomes the standalone binary does. As
-// you add sentinel errors to the library, map them here, for example:
-//
-//	case errors.Is(err, ErrNotFound):
-//		return errs.NotFound("%s", err.Error())
-//	case errors.Is(err, ErrRateLimited):
-//		return errs.RateLimited("%s", err.Error())
-func mapErr(err error) error {
-	return err
 }
